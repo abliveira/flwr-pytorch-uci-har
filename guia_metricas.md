@@ -1,135 +1,269 @@
-# Guia de leitura das métricas do treinamento federado
+# Interpretação dos resultados do treinamento federado
 
-Este guia explica as métricas registradas pela estratégia `LoggingFedAvg` em um experimento de aprendizado federado com Flower. O objetivo é documentar o significado dos campos e como interpretá-los, independentemente da quantidade de clientes, do número de rodadas ou dos resultados de uma execução específica.
+## 1. Organização dos dados e avaliação
 
-**Importante:** todos os valores numéricos apresentados neste guia são exemplos fictícios, usados apenas para demonstrar a leitura dos registros. Eles não representam resultados esperados nem resultados de uma execução real.
+O treinamento utiliza o conjunto de dados UCI HAR, dividido oficialmente em dados de treinamento e teste. Cada cliente representa um participante diferente do conjunto de treinamento.
 
-## 1. Fluxo de uma rodada
+Os dados de cada participante são divididos em duas partes: uma utilizada para o treinamento local do modelo e outra reservada para validação local. Essa divisão permite acompanhar o desempenho de cada cliente sem utilizar os dados de teste oficiais durante o treinamento federado.
 
-Cada rodada do Flower normalmente segue esta sequência:
+A avaliação global é realizada pelo servidor utilizando o conjunto de teste oficial do UCI HAR, composto por participantes que não fazem parte do conjunto de treinamento.
 
-1. `configure_train`: o servidor seleciona os clientes que participarão do treinamento.
-2. `aggregate_train`: os clientes treinam localmente e o servidor agrega as atualizações do modelo. O log pode apresentar a quantidade de exemplos e a perda de treinamento de cada cliente, além da perda agregada.
-3. `configure_evaluate` e `aggregate_evaluate`: os clientes avaliam o modelo recebido em seus próprios conjuntos de validação. O log pode apresentar as métricas individuais e um resumo comparativo entre os clientes.
-4. `Global evaluation`: quando configurada, o servidor avalia o modelo global em um conjunto de avaliação centralizado, separado dos dados locais usados pelos clientes.
+Essa separação permite observar duas perspectivas diferentes:
 
-A avaliação local dos clientes e a avaliação centralizada do servidor são feitas sobre conjuntos de dados potencialmente diferentes. Por isso, os resultados não precisam coincidir.
+- **Avaliação dos clientes:** mede o desempenho do modelo nos dados de validação dos participantes utilizados no treinamento federado.
+- **Avaliação global:** mede o desempenho do modelo nos dados de teste oficiais, que não foram utilizados no treinamento local.
 
 ## 2. Métricas de treinamento local
 
-| Campo no log | Significado | Como interpretar |
-|---|---|---|
-| `num-examples` / `EXAMPLES` | Número de exemplos usado pelo cliente no treinamento reportado | Ajuda a compreender o tamanho da contribuição local e, quando aplicável, o peso usado na agregação. |
-| `train_loss` / `TRAIN LOSS` | Perda reportada após o treinamento local | Em geral, valores menores indicam menor erro segundo a função de perda. Analise junto com as métricas de validação. |
-| `Weighted train loss` | Perda agregada dos clientes, ponderada pela quantidade de exemplos quando essa é a regra configurada | Resume a perda de treinamento levando em conta o tamanho das contribuições dos clientes. |
-| `Replies` | Número de respostas recebidas com sucesso na etapa | Compare com o número de clientes selecionados para verificar a participação efetiva. |
-| `Failures` | Número de falhas registradas na etapa | Falhas podem reduzir o número de clientes cujos resultados entram na agregação. |
+Durante cada rodada, os clientes recebem o modelo global, realizam o treinamento com seus respectivos dados locais e retornam os resultados ao servidor.
 
-Exemplo fictício de linha de treinamento:
+A principal métrica apresentada nessa etapa é:
 
-```text
-Client 01           1,200          1.2450
-```
+| Métrica | Significado |
+|---|---|
+| `train_loss` | Valor da função de perda durante o treinamento local. |
 
-Nesta linha ilustrativa, `Client 01` reportou 1.200 exemplos e uma perda de treinamento de 1,2450. Os valores são apenas demonstrativos.
+A função de perda indica a diferença entre as previsões do modelo e os rótulos esperados. Valores menores indicam que as previsões estão mais próximas dos valores reais, de acordo com a função de perda utilizada.
 
-## 3. Métricas de validação individual dos clientes
+O valor apresentado nos resultados agregados corresponde à agregação das métricas retornadas pelos clientes. Portanto, não representa necessariamente a perda de um único participante.
 
-| Campo no log | Significado | Como interpretar |
-|---|---|---|
-| `N` / `num-examples` | Quantidade de exemplos usados na validação do cliente | É importante ao comparar clientes com tamanhos de validação diferentes. |
-| `LOSS` / `eval_loss` | Perda no conjunto de validação local | Menor geralmente é melhor, considerando a mesma função de perda e condições comparáveis. |
-| `ACCURACY` / `eval_acc` | Proporção de previsões corretas | Maior geralmente é melhor. Pode ser apresentada como fração (`0.82`) ou porcentagem (`82%`). |
-| `MACRO-P` / `eval_precision` | Precisão macro: média da precisão calculada por classe | Dá o mesmo peso a cada classe na média, em vez de dar mais peso às classes mais frequentes. |
-| `MACRO-R` / `eval_recall` | Recall macro: média do recall calculado por classe | Indica a capacidade média de identificar exemplos pertencentes a cada classe. |
-| `MACRO-F1` / `eval_f1` | F1 macro: média do F1 calculado por classe | Resume o equilíbrio entre precisão e recall, atribuindo o mesmo peso a cada classe. |
-| `eval_confidence` | Média da maior probabilidade prevista para cada exemplo | Representa a confiança declarada pelo modelo, não a proporção de acertos. |
-| `eval_correct_confidence` | Confiança média nas previsões corretas | Mostra a confiança do modelo nos exemplos que classificou corretamente. |
-| `eval_wrong_confidence` | Confiança média nas previsões incorretas | Valores altos podem indicar que o modelo comete erros com alta confiança. |
+A redução da `train_loss` ao longo das rodadas indica que o modelo está ajustando seus parâmetros durante o treinamento. Entretanto, a perda de treinamento, isoladamente, não é suficiente para determinar a capacidade de generalização do modelo. Para isso, também é necessário observar as métricas de validação e de avaliação global.
 
-Precisão, recall e F1 são chamados de **macro** quando a métrica é calculada separadamente por classe e, em seguida, é feita a média entre as classes. Confirme a implementação de `test_metrics` para verificar que esse é o método utilizado.
+## 3. Métricas de validação dos clientes
 
-Exemplo fictício de tabela de validação:
+Após o treinamento local, cada cliente avalia o modelo utilizando sua própria partição de validação.
 
-| Cliente | N | LOSS | ACCURACY | MACRO-P | MACRO-R | MACRO-F1 |
-|---|---:|---:|---:|---:|---:|---:|
-| Client 01 | 240 | 0,72 | 81,25% | 0,8120 | 0,8080 | 0,8090 |
-| Client 02 | 300 | 0,85 | 78,00% | 0,7860 | 0,7790 | 0,7800 |
+As métricas retornadas pelos clientes permitem acompanhar o desempenho do modelo nos dados de cada participante e identificar possíveis diferenças entre eles.
 
-Os números acima são inventados apenas para ilustrar o formato. Nesse exemplo, o `Client 01` tem acurácia de validação maior, mas isso não permite concluir, por si só, que ele tenha dados mais fáceis ou que a distribuição seja IID.
+| Métrica | Significado |
+|---|---|
+| `eval_loss` | Valor da função de perda durante a avaliação local. |
+| `eval_acc` | Proporção de previsões corretas em relação ao total de exemplos avaliados. |
+| `eval_precision` | Proporção de previsões positivas corretas entre todas as previsões positivas. |
+| `eval_recall` | Proporção de exemplos positivos identificados corretamente entre todos os exemplos positivos reais. |
+| `eval_f1` | Média harmônica entre precisão e revocação. |
+| `eval_confidence` | Média da maior probabilidade prevista pelo modelo para cada exemplo avaliado. |
+| `eval_correct_confidence` | Confiança média nas previsões classificadas corretamente. |
+| `eval_wrong_confidence` | Confiança média nas previsões classificadas incorretamente. |
 
-## 4. Resumo comparativo entre clientes
+### 3.1. Acurácia
 
-A estratégia de logging pode apresentar estatísticas de acurácia calculadas a partir dos clientes que responderam à avaliação naquela rodada.
+A acurácia representa a proporção de classificações corretas:
 
-| Campo no log | Significado | Como interpretar |
-|---|---|---|
-| `Mean` | Média aritmética simples das acurácias dos clientes incluídos no resumo | Dá o mesmo peso a cada cliente, mesmo que os conjuntos de validação tenham tamanhos diferentes. |
-| `Worst` | Menor acurácia observada entre os clientes incluídos | Mostra a acurácia mais baixa naquela rodada. |
-| `Best` | Maior acurácia observada entre os clientes incluídos | Mostra a acurácia mais alta naquela rodada. |
-| `Gap` | Diferença entre `Best` e `Worst` | Geralmente apresentada em pontos percentuais (pp); descreve a dispersão entre o melhor e o pior resultado observado. |
-| `Replies` / `Failures` | Quantidade de respostas bem-sucedidas e de falhas | Dá contexto sobre quantos clientes contribuíram para o resumo. |
-| `Client ID mapping` | Associação entre rótulos como `Client 01` e identificadores técnicos como `node_id` | Ajuda a acompanhar um cliente entre rodadas. O `node_id` não é uma métrica de desempenho. |
+$$
+Accuracy = \frac{\text{Previsões corretas}}{\text{Total de exemplos}}
+$$
 
-Exemplo fictício:
+Por exemplo, uma acurácia de 88% significa que o modelo classificou corretamente 88 de cada 100 exemplos avaliados.
 
-```text
-Client accuracy (unweighted) | Mean: 79.60% | Worst: 78.00% | Best: 81.25% | Gap: 3.25 pp
-```
+### 3.2. Precisão
 
-Nesse exemplo, a média simples das acurácias é 79,60%, e a diferença entre 81,25% e 78,00% é 3,25 pontos percentuais. Esses valores são ilustrativos.
+A precisão indica a proporção de previsões positivas que estavam corretas:
 
-A média simples entre clientes (`Mean`) não precisa ser igual à acurácia agregada reportada pelo Flower. Quando a agregação é ponderada por `num-examples`, clientes com mais exemplos têm maior peso na métrica agregada; já a média simples dá o mesmo peso a cada cliente. As duas medidas coincidem quando os clientes têm o mesmo tamanho de conjunto e as mesmas métricas individuais são consideradas.
+$$
+Precision = \frac{TP}{TP + FP}
+$$
 
-Um `Gap` pequeno indica que as acurácias observadas estão próximas naquela rodada, mas **não prova** que os dados dos clientes sejam IID. Um `Gap` alto também não prova, sozinho, que exista heterogeneidade: diferenças de tamanho de amostra e variabilidade estatística podem contribuir para a dispersão.
+Em que:
 
-## 5. Métricas da avaliação global no servidor
+- $TP$: verdadeiros positivos;
+- $FP$: falsos positivos.
 
-Quando uma função de avaliação centralizada está configurada, o servidor calcula métricas do modelo global em um conjunto de dados de avaliação centralizado.
+Uma precisão elevada indica que o modelo produz poucas previsões positivas incorretas.
 
-| Campo no log | Significado | Como interpretar |
-|---|---|---|
-| `loss` | Perda no conjunto centralizado | Menor geralmente é melhor, para a mesma função de perda e o mesmo conjunto de avaliação. |
-| `accuracy` | Proporção de previsões corretas no conjunto centralizado | Maior geralmente é melhor. |
-| `precision` | Precisão macro no conjunto centralizado, se assim definida pela função de métricas | Maior geralmente é melhor, interpretada junto com recall e F1. |
-| `recall` | Recall macro no conjunto centralizado, se assim definida pela função de métricas | Maior geralmente é melhor. |
-| `f1` | F1 macro no conjunto centralizado, se assim definida pela função de métricas | Ajuda a resumir o equilíbrio entre precisão e recall. |
-| `confidence` | Confiança média das previsões | Não equivale à acurácia e não mede calibração diretamente. |
-| `correct_confidence` | Confiança média nos exemplos classificados corretamente | Permite comparar a confiança nos acertos com a confiança nos erros. |
-| `wrong_confidence` | Confiança média nos exemplos classificados incorretamente | Uma confiança elevada nos erros pode justificar uma análise de calibração. |
+### 3.3. Revocação
 
-Exemplo fictício de saída resumida:
+A revocação indica a proporção de exemplos positivos reais que foram identificados corretamente:
 
-```text
-ROUND 03 | GLOBAL EVALUATION
-Loss: 0.92 | Accuracy: 78.40% | Macro precision: 0.7860 | Macro recall: 0.7840 | Macro-F1: 0.7810
-```
+$$
+Recall = \frac{TP}{TP + FN}
+$$
 
-Essa linha serve apenas para exemplificar como ler os campos; não define metas de desempenho.
+Em que:
 
-Se o sistema registra uma avaliação antes do início do treinamento, ela pode aparecer como rodada inicial ou sob o índice `0` no resumo final. As avaliações seguintes costumam corresponder às rodadas de treinamento, mas a convenção exata depende da implementação e do formato do log.
+- $TP$: verdadeiros positivos;
+- $FN$: falsos negativos.
 
-## 6. Como ler o bloco `Final results`
+Uma revocação elevada indica que o modelo consegue identificar uma parcela maior dos exemplos pertencentes à classe avaliada.
 
-O bloco `Final results` do Flower é um resumo de métricas registradas durante a execução; em geral, não representa uma nova avaliação independente.
+### 3.4. F1-score
 
-- `Aggregated ClientApp-side Train Metrics`: métricas de treinamento agregadas por rodada, como `train_loss`.
-- `Aggregated ClientApp-side Evaluate Metrics`: métricas de avaliação agregadas a partir das respostas dos clientes, como perda, acurácia, precisão, recall, F1 e confiança, conforme o que cada cliente reportou.
-- `ServerApp-side Evaluate Metrics`: métricas calculadas pela avaliação centralizada do servidor, caso ela esteja configurada.
+O F1-score combina precisão e revocação por meio da média harmônica:
 
-Os valores podem aparecer em notação científica. Por exemplo, `7.8400e-01` equivale a `0.784`, ou `78,4%` quando o campo representa uma proporção.
+$$
+F1 = 2 \cdot \frac{Precision \cdot Recall}{Precision + Recall}
+$$
 
-Os nomes exatos dos campos e a estrutura do resumo podem mudar conforme a versão do Flower e a implementação da estratégia. Use os nomes efetivamente presentes no log da execução.
+Essa métrica permite avaliar conjuntamente a capacidade do modelo de produzir previsões positivas corretas e identificar os exemplos positivos reais.
 
-## 7. Cuidados na interpretação
+### 3.5. Confiança das previsões
 
-- **Conjuntos diferentes:** validação local e teste centralizado podem produzir resultados diferentes porque avaliam dados diferentes.
-- **Métricas macro:** médias macro dão o mesmo peso a cada classe; não mostram, sozinhas, quais classes têm mais erros.
-- **Confiança não é calibração:** um modelo pode emitir probabilidades elevadas e errar. A confiança média não demonstra se as probabilidades refletem frequências reais de acerto.
-- **Perda e acurácia medem aspectos distintos:** a acurácia mede a proporção de previsões corretas; a perda também considera o grau de confiança atribuído às previsões, conforme a função utilizada.
-- **Média entre clientes:** diferencie a média simples das métricas dos clientes da agregação ponderada por exemplos.
-- **Clientes ausentes ou com falha:** o resumo pode refletir somente os clientes que responderam com sucesso. Consulte `Replies` e `Failures` ao comparar rodadas.
-- **Média da perda por lotes:** se a implementação calcula a média simples das perdas dos lotes, um último lote menor pode receber o mesmo peso de um lote completo. Para obter uma média ponderada por exemplos, acumule a perda considerando o tamanho de cada lote.
-- **IID e não-IID:** proximidade ou diferença entre métricas de clientes não comprova, por si só, o tipo de distribuição dos dados. A configuração da partição e a distribuição das classes também devem ser examinadas.
-- **Calibração:** para avaliar a correspondência entre confiança e frequência real de acerto, considere métricas como Expected Calibration Error (ECE) e gráficos de confiabilidade.
-- **Análise por classe:** matriz de confusão e métricas individuais por classe ajudam a localizar classes com desempenho baixo, algo que métricas agregadas podem ocultar.
+As métricas de confiança são calculadas a partir das probabilidades produzidas pelo modelo após a aplicação da função softmax.
+
+Para cada exemplo, considera-se a maior probabilidade prevista entre as classes. As métricas representam:
+
+- `eval_confidence`: média da maior probabilidade prevista para todos os exemplos;
+- `eval_correct_confidence`: média da maior probabilidade dos exemplos classificados corretamente;
+- `eval_wrong_confidence`: média da maior probabilidade dos exemplos classificados incorretamente.
+
+A confiança representa o grau de certeza atribuído pelo modelo à sua previsão, não a probabilidade de que essa previsão esteja efetivamente correta. Por isso, uma confiança elevada não garante uma classificação correta.
+
+A comparação entre `eval_correct_confidence` e `eval_wrong_confidence` permite observar se o modelo tende a atribuir maior confiança às classificações corretas do que às incorretas.
+
+## 4. Comparação entre clientes
+
+Além das métricas agregadas, os resultados podem ser analisados individualmente para identificar diferenças de desempenho entre os participantes.
+
+A comparação da acurácia de cada cliente permite observar a distribuição do desempenho do modelo nos diferentes conjuntos de validação.
+
+Na execução com 10 clientes e 25 rodadas, os resultados da última rodada foram:
+
+| Indicador | Resultado |
+|---|---:|
+| Acurácia média dos clientes | 88,85% |
+| Menor acurácia | 75,00% |
+| Cliente com menor acurácia | Client 07 |
+| Maior acurácia | 98,55% |
+| Cliente com maior acurácia | Client 04 |
+| Diferença entre a maior e a menor acurácia | 23,55 pontos percentuais |
+
+A acurácia média apresentada nessa comparação é calculada pela média aritmética das acurácias individuais dos clientes. Cada cliente possui o mesmo peso nesse cálculo, independentemente da quantidade de exemplos em sua partição de validação.
+
+Já o valor agregado de `eval_acc` considera a quantidade de exemplos retornada por cada cliente como peso da agregação. Por esse motivo, os dois resultados podem apresentar pequenas diferenças.
+
+Na execução apresentada, a média aritmética das acurácias individuais foi de 88,85%, enquanto a métrica agregada `eval_acc` foi de 88,82%.
+
+A diferença entre o melhor e o pior resultado também é relevante. Uma variação elevada pode indicar que o desempenho do modelo não é uniforme entre os participantes, o que pode estar relacionado às diferenças na distribuição dos dados locais.
+
+## 5. Avaliação global no servidor
+
+Ao final de cada rodada, o servidor pode avaliar o modelo global utilizando o conjunto de teste oficial do UCI HAR.
+
+Essa avaliação permite acompanhar o desempenho do modelo agregado em dados que não foram utilizados pelos clientes durante o treinamento.
+
+As métricas apresentadas nessa etapa são:
+
+| Métrica | Significado |
+|---|---|
+| `loss` | Valor da função de perda no conjunto de teste global. |
+| `accuracy` | Proporção de classificações corretas no conjunto de teste. |
+| `precision` | Precisão macro calculada considerando as classes individualmente. |
+| `recall` | Revocação macro calculada considerando as classes individualmente. |
+| `f1` | F1-score macro calculado considerando as classes individualmente. |
+| `confidence` | Média da maior probabilidade prevista para os exemplos do conjunto de teste. |
+| `correct_confidence` | Confiança média das previsões corretas. |
+| `wrong_confidence` | Confiança média das previsões incorretas. |
+
+### 5.1. Métricas macro
+
+As métricas `precision`, `recall` e `f1` são calculadas individualmente para cada classe e, em seguida, recebem uma média aritmética.
+
+Para seis classes, a precisão macro é:
+
+$$
+Precision_{macro} =
+\frac{Precision_1 + Precision_2 + \cdots + Precision_6}{6}
+$$
+
+O mesmo procedimento é utilizado para a revocação e o F1-score.
+
+Dessa forma, todas as classes possuem o mesmo peso no cálculo da métrica, independentemente da quantidade de exemplos pertencentes a cada uma.
+
+Essa abordagem permite avaliar o desempenho do modelo considerando todas as classes, evitando que classes com maior quantidade de exemplos dominem o resultado.
+
+### 5.2. Resultados da avaliação global
+
+Na execução com 10 clientes e 25 rodadas, os resultados da última rodada foram:
+
+| Métrica | Resultado |
+|---|---:|
+| `loss` | 0,3794 |
+| `accuracy` | 86,26% |
+| `precision` | 0,8721 |
+| `recall` | 0,8561 |
+| `f1` | 0,8584 |
+| `confidence` | 85,59% |
+| `correct_confidence` | 88,43% |
+| `wrong_confidence` | 67,72% |
+
+A acurácia global de 86,26% indica que o modelo classificou corretamente aproximadamente 86 de cada 100 exemplos do conjunto de teste.
+
+O F1-score macro de 0,8584 representa o equilíbrio entre precisão e revocação, considerando as seis classes com o mesmo peso.
+
+A confiança média das previsões corretas foi de 88,43%, enquanto a das previsões incorretas foi de 67,72%. Essa diferença indica que, nessa avaliação, o modelo atribuiu maior confiança às classificações corretas.
+
+## 6. Resultados apresentados pelo Flower
+
+Ao finalizar a execução, o Flower apresenta uma seção denominada `Final results`, que reúne as métricas registradas durante o treinamento e a avaliação.
+
+Essa seção é dividida em diferentes grupos.
+
+### 6.1. Aggregated ClientApp-side Train Metrics
+
+Contém as métricas retornadas pelos clientes durante o treinamento local.
+
+No projeto, a principal métrica registrada nesse grupo é:
+
+- `train_loss`: perda agregada do treinamento local em cada rodada.
+
+A comparação dos valores entre as rodadas permite acompanhar a evolução da função de perda durante o treinamento federado.
+
+### 6.2. Aggregated ClientApp-side Evaluate Metrics
+
+Contém as métricas retornadas pelos clientes durante a avaliação local.
+
+No projeto, são apresentadas:
+
+- `eval_loss`;
+- `eval_acc`;
+- `eval_precision`;
+- `eval_recall`;
+- `eval_f1`;
+- `eval_confidence`;
+- `eval_correct_confidence`;
+- `eval_wrong_confidence`.
+
+Esses valores representam a agregação das avaliações realizadas nas partições de validação dos clientes.
+
+As métricas são agregadas considerando a quantidade de exemplos informada por cada cliente. Portanto, as métricas agregadas de precisão, revocação e F1-score correspondem à agregação das métricas calculadas localmente, e não ao cálculo direto dessas métricas sobre todas as previsões individuais reunidas em um único conjunto.
+
+### 6.3. ServerApp-side Evaluate Metrics
+
+Contém as métricas calculadas pelo servidor durante a avaliação do modelo global no conjunto de teste oficial.
+
+No projeto, são apresentadas:
+
+- `accuracy`;
+- `loss`;
+- `precision`;
+- `recall`;
+- `f1`;
+- `confidence`;
+- `correct_confidence`;
+- `wrong_confidence`.
+
+Esses resultados permitem acompanhar a evolução do modelo global ao longo das rodadas e verificar seu desempenho nos dados de teste.
+
+A entrada identificada como rodada 0 corresponde à avaliação inicial do modelo global, antes das atualizações realizadas pelo treinamento federado.
+
+### 6.4. Notação científica
+
+Alguns valores podem aparecer na notação científica. Por exemplo:
+
+| Notação | Valor decimal |
+|---|---:|
+| `8.6257e-01` | 0,86257 |
+| `3.7945e-01` | 0,37945 |
+| `8.5836e-01` | 0,85836 |
+
+Para converter um resultado em percentual, basta multiplicar o valor decimal por 100. Assim, `8.6257e-01` corresponde a aproximadamente 86,26%.
+
+## 7. Considerações sobre a interpretação dos resultados
+
+As métricas de treinamento, validação local e avaliação global representam etapas diferentes do processo e não devem ser interpretadas como se fossem calculadas sobre o mesmo conjunto de dados.
+
+A perda de treinamento indica o comportamento do modelo durante os ajustes realizados pelos clientes. As métricas de validação permitem observar seu desempenho nos dados locais reservados para avaliação. Já as métricas do servidor indicam o desempenho do modelo global no conjunto de teste oficial.
+
+Também é importante considerar que a agregação das métricas locais não equivale necessariamente ao cálculo das mesmas métricas sobre todas as previsões reunidas. Isso ocorre especialmente com precisão, revocação e F1-score, que são calculados localmente e depois agregados.
+
+Por fim, a implementação de `test_metrics` calcula a perda dividindo a soma das perdas dos lotes pela quantidade de lotes avaliados. Portanto, cada lote possui o mesmo peso nesse cálculo, mesmo quando o último lote contém menos exemplos. A acurácia, por sua vez, é calculada dividindo a quantidade de previsões corretas pelo total de exemplos avaliados.
